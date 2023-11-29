@@ -16,13 +16,14 @@ from datetime import datetime
 from tqdm import tqdm
 parser = ArgumentParser()
 parser.add_argument("-epochs", type=int, default=2001)
+parser.add_argument("-learning_rate", type=float, default=1e-1)
 # weights=[0.001,1] worked
 parser.add_argument("-weights", type=float, nargs=2, default=[0.1, 1])
 parser.add_argument("-content_resize_size",
                     type=int, nargs=2, default=[300, 300])
 parser.add_argument("-style_resize_size", type=int,
                     nargs=2, default=[300, 300])
-parser.add_argument("-saving_frequency", type=int, default=10)
+parser.add_argument("-saving_frequency", type=int, default=100)
 
 args = parser.parse_args()
 torch.set_printoptions(precision=4)
@@ -132,7 +133,7 @@ for out in style_outputs:
 target_image = content_image_tensor.clone()
 target_image.requires_grad = True
 
-optimizer = torch.optim.LBFGS([target_image], lr=0.1)
+optimizer = torch.optim.AdamW([target_image], lr=args.learning_rate)
 style_loss_fn = nn.MSELoss()
 content_loss_fn = nn.MSELoss()
 all_relus = torch.tensor(
@@ -145,38 +146,32 @@ for k, v in args.__dict__.items():
 print(
     f"style activation layers: {selected_style_layers};content activation layers: {selected_content_layers}")
 for e in tqdm(range(args.epochs)):
-    def closure():
-        optimizer.zero_grad()
-        with torch.no_grad():
-            target_image.clamp_(0, 1)
-        model(compose(target_image))
-        # compute style loss
-        target_sequential_outputs = copy(sequential_outputs)
-        style_loss = 0
-        for layer in selected_style_layers:
-            target_gram, numel = compute_gram_matrix(
-                target_sequential_outputs[layer])
-            style_loss += style_loss_fn(target_gram, style_grams[layer])/numel
+    with torch.no_grad():
+        target_image.clamp_(0, 1)
+    model(compose(target_image))
+    # compute style loss
+    target_sequential_outputs = copy(sequential_outputs)
+    style_loss = 0
+    for layer in selected_style_layers:
+        target_gram, numel = compute_gram_matrix(
+            target_sequential_outputs[layer])
+        style_loss += style_loss_fn(target_gram, style_grams[layer])/numel
 
-        # compute content loss
-        content_loss = 0
-        for l in selected_content_layers:
-            content_loss += content_loss_fn(
-                target_sequential_outputs[l], content_outputs[l])
-        loss = args.weights[0]*content_loss+args.weights[1] * \
-            style_loss/len(selected_style_layers)
+    # compute content loss
+    content_loss = 0
+    for l in selected_content_layers:
+        content_loss += content_loss_fn(
+            target_sequential_outputs[l], content_outputs[l])
+    loss = args.weights[0]*content_loss+args.weights[1] * \
+        style_loss/len(selected_style_layers)
+    optimizer.zero_grad()
+    loss.backward(retain_graph=True)
 
-        loss.backward(retain_graph=True)
-
-        return loss
-    optimizer.step(closure)
+    optimizer.step()
     if e % args.saving_frequency == 0:
         fig, axes = plt.subplots(1, 3, constrained_layout=True)
         for a in axes:
             a.axis("off")
         generated_image = TF.to_pil_image(
             compose(target_image.detach()).squeeze(0).cpu())
-        axes[0].imshow(content_image.resize(args.style_resize_size))
-        axes[1].imshow(style_image.resize(args.style_resize_size))
-        axes[2].imshow(generated_image)
         generated_image.save(f"{result_root}/{picname}_{e}.jpg")
